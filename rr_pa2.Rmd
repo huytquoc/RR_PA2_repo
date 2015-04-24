@@ -1,0 +1,198 @@
+---
+title: "Reproducible Research Peer Assignment 2"
+author: "Huy Tran"
+date: "Thursday, April 23, 2015"
+output: html_document
+---
+
+### Assigment Descriptions
+
+The basic goal of this assignment is to explore the NOAA Storm Database and answer some basic questions about severe weather events.
+
+#### Questions
+
+Your data analysis must address the following questions:
+
+1. Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+2. Across the United States, which types of events have the greatest economic consequences?
+
+Consider writing your report as if it were to be read by a government or municipal manager who might be responsible for preparing for severe weather events and will need to prioritize resources for different types of events. However, there is no need to make any specific recommendations in your report.
+
+
+### Loading and preprocessing the data
+
+1. Load the data (i.e. `read.csv()`)
+
+```{r libraries.etc, echo=FALSE, results='hide', message=FALSE}
+cachedata = F
+cachemodels = TRUE
+
+# if(!require("data.table")){
+#   install.packages("data.table")
+# }
+# library("data.table")
+
+if(!require("downloader")){
+  install.packages("downloader")
+}
+library("downloader")
+
+#library("RCurl")
+
+if(!require("car")){
+  install.packages("car")
+}
+library("car")
+
+if(!require("plyr")){
+  install.packages("plyr")
+}
+library("plyr")
+
+if(!require("R.utils")){
+  install.packages("R.utils")
+}
+library("R.utils")
+
+if(!require("data.table")){
+  install.packages("data.table")
+}
+library("data.table")
+
+if(!require("ggplot2")){
+  install.packages("ggplot2")
+}
+library("ggplot2")
+
+```
+
+```{r loading data, echo=T, cache=cachedata}
+# Set working directory and download data file 
+
+mainDir <- getwd()
+subDir <- "RRPA2_Data"
+
+if (file.exists(subDir)){
+    setwd(file.path(mainDir, subDir))
+} else {
+    dir.create(file.path(mainDir, subDir))
+    setwd(file.path(mainDir, subDir))
+}
+
+# Download the data file:
+if (!file.exists("repdata-data-StormData.csv.bz2")){
+  url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+  download(url, "repdata-data-StormData.csv.bz2", method="auto")
+}
+
+dt <- read.csv(bzfile("repdata-data-StormData.csv.bz2"))
+
+```
+
+```{r show data summary, cache=cachedata}
+summary(dt)
+head(dt,10)
+```
+
+## Data Processing
+
+#### 1. Step 1 - Data Cleansing
+Those different event names representing one name, for example: TSTM WIND and THUNDERSTORM WIND should be understood correctly as the same event - THUNDERSTORM WIND
+
+```{r data cleansing}
+
+dt <- as.data.table(dt)
+
+# removing EVTYPE names "Summary" and store in dt1
+dt2 <- dt[!grepl("Summary", dt$EVTYPE), ]
+
+remove(dt)
+
+# capitalizing all EVTYPE names
+dt2$EVTYPE <- toupper(dt2$EVTYPE)
+
+# mapping different names to correct name
+dt2[dt2$EVTYPE == "TSTM WIND", ]$EVTYPE = "THUNDERSTORM WIND"
+dt2[dt2$EVTYPE == "THUNDERSTORM WINDS", ]$EVTYPE = "THUNDERSTORM WIND"
+dt2[dt2$EVTYPE == "RIVER FLOOD", ]$EVTYPE = "FLOOD"
+dt2[dt2$EVTYPE == "HURRICANE/TYPHOON", ]$EVTYPE = "HURRICANE-TYPHOON"
+dt2[dt2$EVTYPE == "HURRICANE", ]$EVTYPE = "HURRICANE-TYPHOON"
+
+# use PROPDMGEXP to get property damage costs
+dt2$dmgUnits <- recode(dt2$PROPDMGEXP, " ''=0;'-'=0;'?'=0;'+'=0; '0'=0;'1'=10;'2'=100;
+                           '3'=1000;'4'=10000;'5'=100000;'6'=1000000;'7'=10000000;
+                           '8'=100000000;'B'=1000000000;'h'=100;'H'=100; 'k'=1000;
+                           'K'=1000;'m'=1000000;'M'=1000000", 
+                           as.factor.result = FALSE)
+
+dt2$PROPDMG <- dt2$PROPDMG * dt2$dmgUnits
+
+
+# use CROPDMGEXP to get crop damage costs
+
+dt2$CROPDMG <- dt2$CROPDMG * dt2$dmgUnits
+
+```
+
+#### 2. Step 2 - Calculating the Damage Cost
+
+The damage caused to POPULATION HEALTH would be accounted based on the cost of Fatalities and Injuries
+
+And, the damage caused to ECONOMY would be accounted based on the total cost including Population Health, Property, Crop costs.
+
+```{r calculating}
+# use ddply from plyr to summarize data for fatalities, injury and damage grouped per event type
+aggrByEvent = ddply(dt2, .(EVTYPE), summarize, 
+                    totalFatalities = sum(FATALITIES), 
+                    totalInjuries = sum(INJURIES), 
+                    totalPropdmg = sum(PROPDMG),
+                    totalCropdmg = sum(CROPDMG)
+                    )
+
+# calculate total economic costs by combining cost of fatality/injury and crop/property
+# damage due to an adverse weather event
+costFatality <- 1410000
+costInjury <- 78900
+aggrByEvent$totalDamageCost <- (aggrByEvent$totalCropdmg + aggrByEvent$totalPropdmg)/1e9
+aggrByEvent$totalHumanCost <- (costFatality * aggrByEvent$totalFatalities + costInjury * aggrByEvent$totalInjuries)/1e9
+aggrByEvent$totalEconomicCost <- aggrByEvent$totalDamageCost + aggrByEvent$totalHumanCost
+```
+
+## Results
+
+### 1. What events are most harmful with respect to population health?
+
+```{r showing population damage}
+# limit to top 10 event types
+n <- 10
+
+#par(mfrow=c(1,1), mar=c(10,8,4,2))
+
+# total injuries
+plotdata <- aggrByEvent[order(aggrByEvent$totalInjuries, decreasing = T), ][1:n, ]
+
+plot <- ggplot(plotdata, aes(x=reorder(EVTYPE, -totalInjuries), y=totalInjuries))
+plot <- plot + geom_bar(fill="blue", colour="darkgreen", stat="identity") + coord_flip() 
+plot <- plot + labs(x="Event Type", y="Fatalities and Injuries", title="Top 10 most harmful to Population Health in the US")
+plot <- plot + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+plot
+
+
+```
+
+### 2. What events have the greatest economic consequences?
+
+```{r showing economic damage}
+#par(mfrow=c(1,1), mar=c(10,8,4,2))
+
+# total economic losses   
+plotdata <- aggrByEvent[order(aggrByEvent$totalEconomicCost, decreasing = T), ][1:n, ]
+
+plot <- ggplot(plotdata, aes(x=reorder(EVTYPE, -totalEconomicCost), y=totalEconomicCost/10))
+plot <- plot + geom_bar(fill="red", colour="darkgreen", stat="identity") + coord_flip() 
+plot <- plot + labs(x="Event Type", y="Damages (in US billions)", title="Top 10 greatest Economic Consequences in the US")
+plot <- plot + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+plot
+
+```
